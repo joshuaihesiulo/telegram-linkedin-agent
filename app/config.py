@@ -36,6 +36,11 @@ MAX_VIDEO_MB = int(_get("MAX_VIDEO_MB", "512") or "512")
 MEDIA_RESOLUTION = _get("MEDIA_RESOLUTION", "low")
 AUDIO_ONLY_DEFAULT = _get("AUDIO_ONLY_DEFAULT", "true").lower() in ("1", "true", "yes")
 
+SCHEDULER_ENABLED = _get("SCHEDULER_ENABLED", "true").lower() in ("1", "true", "yes")
+SCHEDULER_INTERVAL_SEC = int(_get("SCHEDULER_INTERVAL_SEC", "30") or "30")
+DEFAULT_TIMEZONE = _get("DEFAULT_TIMEZONE", "UTC")
+ONBOARDING_SAMPLES = int(_get("ONBOARDING_SAMPLES", "10") or "10")
+
 SUPPORTED_VIDEO_EXTS = {".mp4", ".mov", ".webm", ".mkv", ".m4v"}
 
 TELEGRAM_API = "https://api.telegram.org"

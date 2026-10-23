@@ -6,6 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+PostingMode = Literal["on_demand", "scheduled"]
+MediaPreference = Literal["text", "image", "video", "image_video"]
+
 
 class VideoAnalysis(BaseModel):
     transcript: str = Field(min_length=1)
@@ -50,20 +53,46 @@ class UserState(BaseModel):
         "IDLE", "AWAITING_LINK", "PROCESSING",
         "AWAITING_APPROVAL", "PUBLISHED", "EDITING",
         "REJECTED", "EXPIRED", "FAILED",
+        "ONBOARDING", "AWAITING_MATERIAL", "SCHEDULED",
     ] = "IDLE"
     instructions: str = ""
     drive_file_id: str = ""
+
+    # --- onboarding profile ---------------------------------------------
+    onboarded: bool = False
+    onboarding_step: str = ""
+    platform: str = ""
+    account: str = ""
+    account_label: str = ""
+    connect_url: str = ""
+    samples: list[str] = Field(default_factory=list)
+    voice_guide: str = ""
+    posting_mode: PostingMode = "on_demand"
+    schedule: str = ""
+    timezone: str = "UTC"
+    media_pref: MediaPreference = "text"
+    # Material waiting for a caption / media before drafting.
+    pending_text: str = ""
+    pending_media_file_id: str = ""
+    pending_media_type: str = ""
+    pending_media_url: str = ""
 
 
 class DraftRecord(BaseModel):
     draft_id: str
     telegram_id: int
-    drive_file_id: str
-    analysis_json: VideoAnalysis
     draft_text: str
     status: Literal[
-        "pending", "approved", "rejected", "expired", "published", "failed"
+        "pending", "approved", "scheduled", "publishing", "rejected",
+        "expired", "published", "failed",
     ] = "pending"
     created_at: datetime
     expires_at: datetime
+    drive_file_id: str = ""
+    analysis_json: VideoAnalysis | None = None
+    platform: str = ""
+    media_type: str = "text"          # text | image | video
+    media_file_id: str = ""
+    media_url: str = ""
+    scheduled_for: datetime | None = None
     post_url: str = ""

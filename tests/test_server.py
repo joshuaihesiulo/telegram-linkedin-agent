@@ -67,6 +67,12 @@ def test_invalid_link_guidance(monkeypatch):
     importlib.reload(server)
     monkeypatch.setattr(server.telegram, "send_message",
                         lambda *a, **k: sent.append((a, k)) or {})
+    # Existing users bypass onboarding, so they still get link guidance.
+    from app.schemas import UserState
+
+    server.store.set_state(UserState(
+        telegram_id=5, state="AWAITING_MATERIAL", onboarded=True,
+        platform="linkedin", account="urn:li:person:123"))
     from fastapi.testclient import TestClient as TC
 
     c = TC(server.app)
@@ -74,7 +80,7 @@ def test_invalid_link_guidance(monkeypatch):
         "update_id": 9002,
         "message": {"message_id": 1, "chat": {"id": 5},
                     "from": {"id": 5},
-                    "text": "https://example.com/not-drive"}})
+                    "text": "https://drive.google.com/open"}})
     assert sent and "doesn't look like" in sent[-1][0][1]
 
 

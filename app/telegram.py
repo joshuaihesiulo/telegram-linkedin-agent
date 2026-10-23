@@ -36,20 +36,75 @@ def answer_callback(callback_id: str, text: str = "") -> None:
         pass
 
 
-def approval_keyboard(draft_id: str) -> dict:
-    return {
-        "inline_keyboard": [[
-            {"text": "Approve", "callback_data": f"approve:{draft_id}"},
-            {"text": "Edit", "callback_data": f"edit:{draft_id}"},
-            {"text": "Reject", "callback_data": f"reject:{draft_id}"},
-        ]]
-    }
+def approval_keyboard(draft_id: str, can_schedule: bool = False) -> dict:
+    row = [
+        {"text": "Approve" if not can_schedule else "Post now",
+         "callback_data": f"approve:{draft_id}"},
+        {"text": "Edit", "callback_data": f"edit:{draft_id}"},
+        {"text": "Reject", "callback_data": f"reject:{draft_id}"},
+    ]
+    rows = [row]
+    if can_schedule:
+        rows.insert(0, [{"text": "Schedule next slot",
+                         "callback_data": f"sched:{draft_id}"}])
+    return {"inline_keyboard": rows}
 
 
 def skip_keyboard() -> dict:
     return {"inline_keyboard": [[
         {"text": "Skip", "callback_data": "skip_instructions"},
     ]]}
+
+
+def platform_keyboard(platforms) -> dict:
+    buttons = [{"text": p.name, "callback_data": f"ob:platform:{p.slug}"}
+               for p in platforms]
+    rows = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    return {"inline_keyboard": rows}
+
+
+def connect_keyboard(url: str) -> dict:
+    rows = []
+    if url:
+        rows.append([{"text": "Connect account", "url": url}])
+    rows.append([
+        {"text": "I've connected", "callback_data": "ob:connected"},
+        {"text": "New link", "callback_data": "ob:newlink"},
+    ])
+    return {"inline_keyboard": rows}
+
+
+def account_keyboard(accounts) -> dict:
+    return {"inline_keyboard": [
+        [{"text": a.label[:60], "callback_data": f"ob:acct:{a.value}"}]
+        for a in accounts[:8]
+    ]}
+
+
+def samples_keyboard(count: int, target: int) -> dict:
+    if count < target:
+        return {"inline_keyboard": [[
+            {"text": f"{count}/{target} collected", "callback_data": "ob:noop"},
+        ]]}
+    return {"inline_keyboard": [[
+        {"text": "Done - learn my voice", "callback_data": "ob:samples_done"},
+    ]]}
+
+
+def mode_keyboard() -> dict:
+    return {"inline_keyboard": [[
+        {"text": "Scheduled", "callback_data": "ob:mode:scheduled"},
+        {"text": "Only when I send material", "callback_data": "ob:mode:on_demand"},
+    ]]}
+
+
+def media_keyboard() -> dict:
+    return {"inline_keyboard": [
+        [{"text": "Text only", "callback_data": "ob:media:text"},
+         {"text": "Images", "callback_data": "ob:media:image"}],
+        [{"text": "Video", "callback_data": "ob:media:video"},
+         {"text": "Images + video", "callback_data": "ob:media:image_video"}],
+    ]}
 
 
 def download_file(file_path: str, dest: Path) -> Path:
@@ -65,6 +120,10 @@ def download_file(file_path: str, dest: Path) -> Path:
 
 
 def get_file(file_id: str) -> str:
+    return get_file_info(file_id)["file_path"]
+
+
+def get_file_info(file_id: str) -> dict:
     r = httpx.post(f"{_base()}/getFile", json={"file_id": file_id}, timeout=20)
     r.raise_for_status()
-    return r.json()["result"]["file_path"]
+    return r.json()["result"]

@@ -3,23 +3,57 @@
 ## Runtime verification (2026-10-16, global python 3.14)
 - fastapi 0.111.0, uvicorn 0.30.1, pydantic 2.13.5, httpx 0.28.1 — present
 - google-genai 2.30.1, google-api-python-client 2.201.0, google-auth 2.60.0 — present
-- composio_core 0.3.30 (legacy) present; v3 `composio==0.26.0` from requirements.txt NOT installed in venv (venv empty). Code supports both, prefers v3 if available.
+- composio_core 0.3.30 (legacy) may still be present; the project pins v3 `composio==0.30.0` (see below). Dev machine: composio not installed — imports are lazy, tests monkeypatch the module.
 - No supabase / aiogram packages — using httpx REST for Supabase and direct Bot HTTP API (avoids extra deps, same API surface).
 - ffmpeg: not verified yet — audio extraction is optional; pipeline falls back to full-file upload if ffmpeg missing.
 
-## Composio LinkedIn actions (DO NOT hardcode — discover at runtime)
-Discovery script: `venv\Scripts\python.exe scripts/discover_composio.py` (tries v3 then legacy).
-Status 2026-10-16: discovery attempted on global python 3.14 — FAILED as expected:
-- `from composio import Composio` raises AttributeError in legacy composio 0.3.x
-  (`Action.__annotations__` broken on 3.14).
-- `pip show composio` = not found (only legacy composio_core 0.3.30 present).
-Next: install `composio==0.26.0` (requirements.txt) in a Python 3.12 venv/Docker,
-set COMPOSIO_API_KEY + COMPOSIO_ENTITY_ID, re-run discovery, record exact
-LINKEDIN_* action names here before Milestone 5. app/linkedin.py tries
-LINKEDIN_CREATE_VIDEO_POST then LINKEDIN_CREATE_POST and surfaces a clear
-operator error until discovery succeeds.
+## Composio SDK 0.30.0 (verified 2026-10-23 against the live toolkit docs)
+
+Pinned in requirements.txt: `composio==0.30.0`, `tzdata==2026.5` (ZoneInfo on
+Windows). Dev machines may not have `composio` installed; imports are lazy and
+tests monkeypatch the module.
+
+Session / per-user API (app/composio_client.py):
+- `Composio(api_key=...)`; `client.sessions.create(user_id="tg_<telegram_id>",
+  toolkits=[TOOLKIT])` — one stable user key per Telegram user isolates connections.
+- Connect Link: `session.authorize(toolkit)` -> hosted `redirect_url` (no custom OAuth).
+- Connection check: `client.connected_accounts.list(user_id=..., toolkit_slugs=[...])`.
+- Execute: `session.execute(ACTION, arguments={...})` — `arguments` is KEYWORD-ONLY.
+- Legacy entity path (pre-onboarding drafts only):
+  `client.tools.execute(ACTION, {...}, user_id=config.COMPOSIO_ENTITY_ID)`.
+
+File staging (large media, no base64):
+- `session.execute` does NOT auto-upload local paths.
+- `FileUploadable.from_path(client=client.client, file=Path, tool=ACTION,
+  toolkit=TOOLKIT).model_dump()` -> `{name, mimetype, s3key}`; pass that dict
+  as the file argument value. Streams to S3/R2, so large videos are fine.
+- Instagram cannot fetch private files; it takes public URLs only.
+
+Verified action names + fields (docs.composio.dev/toolkits/<name>.md — never
+hardcode from memory; use scripts/discover_composio.py to refresh):
+- LinkedIn:
+  - `LINKEDIN_UPLOAD_VIDEO` (`file` | `video_url`; waits until ready) ->
+    `LINKEDIN_CREATE_VIDEO_POST` (`video_urn`, `commentary`, `visibility`).
+    Member-owned (personal profile) ONLY — org pages are not supported.
+  - `LINKEDIN_INITIALIZE_IMAGE_UPLOAD` (`owner`) -> PUT bytes to `upload_url` ->
+    `LINKEDIN_REGISTER_IMAGE_UPLOAD` (`owner_urn`) -> image URN ->
+    `LINKEDIN_CREATE_LINKED_IN_POST` (`author`, `commentary`, `images: [urn]`).
+- X: `TWITTER_UPLOAD_MEDIA` (images <= ~5MB) | `TWITTER_UPLOAD_LARGE_MEDIA`
+  (video/GIF/>5MB), both (`media`, `media_category`) -> poll
+  `TWITTER_GET_MEDIA_UPLOAD_STATUS` (`media_id`) until state=succeeded ->
+  `TWITTER_CREATION_OF_A_POST` (`text`, `media_media_ids`).
+- Facebook Page: `FACEBOOK_CREATE_POST` (`page_id`, `message`) |
+  `FACEBOOK_CREATE_PHOTO_POST` (`photo`) | `FACEBOOK_CREATE_VIDEO_POST`
+  (`video`, `description`); pages come from `FACEBOOK_LIST_MANAGED_PAGES`.
+- Instagram (Business/Creator only): `INSTAGRAM_GET_USER_INFO`
+  (`ig_user_id="me"`) -> `INSTAGRAM_POST_IG_USER_MEDIA`
+  (`image_url` | `video_url`, `caption`, `ig_user_id`) ->
+  `INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH` (`creation_id`, `max_wait_seconds`;
+  polls until FINISHED). `INSTAGRAM_CREATE_MEDIA_CONTAINER` and
+  `INSTAGRAM_CREATE_POST` are DEPRECATED.
 
 ## Supabase schema (run in SQL editor)
+Base tables (fresh deploy):
 ```sql
 create table if not exists user_state (
   telegram_id bigint primary key,
@@ -32,7 +66,7 @@ create table if not exists drafts (
   draft_id text primary key,
   telegram_id bigint not null,
   drive_file_id text not null,
-  analysis_json jsonb not null,
+  analysis_json jsonb,          -- nullable: material posts have no video analysis
   draft_text text not null,
   status text not null default 'pending',
   created_at timestamptz default now(),
@@ -44,6 +78,20 @@ create table if not exists processed_updates (
   created_at timestamptz default now()
 );
 ```
+
+Onboarding + multi-platform migration (existing deployments):
+```sql
+alter table user_state add column if not exists profile jsonb default '{}'::jsonb;
+alter table drafts alter column analysis_json drop not null;
+alter table drafts add column if not exists platform text default '';
+alter table drafts add column if not exists media_type text default 'text';
+alter table drafts add column if not exists media_file_id text default '';
+alter table drafts add column if not exists media_url text default '';
+alter table drafts add column if not exists scheduled_for timestamptz;
+```
+`profile` stores the whole onboarding object (platform, account, samples,
+voice_guide, posting_mode, schedule, timezone, media_pref, pending_*). Without
+it, writes fall back to memory and onboarding is lost on restart.
 
 ## Gemini models
 - GEMINI_PRIMARY default: gemini-2.5-flash

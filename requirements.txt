@@ -6,6 +6,7 @@ python-dotenv==1.2.4
 google-genai==2.30.0
 google-api-python-client==2.201.0
 google-auth==2.60.0
-composio==0.26.0
+composio==0.30.0
+tzdata==2026.5
 pytest==9.1.1
 pytest-asyncio==1.4.0

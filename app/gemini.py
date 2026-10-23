@@ -171,16 +171,47 @@ def analyze_video(path: Path, instructions: str) -> VideoAnalysis:
             pass
 
 
-WRITE_PROMPT = """Write a LinkedIn post from this video analysis JSON + user instructions.
-Style: {style}
+WRITE_PROMPT = """Write a {platform} post from this source analysis JSON + user instructions.
+Voice/style profile: {style}
+{samples}
 Rules: precise, no filler, no cliches, no emoji spam, no "In today's fast-paced world".
 Strong first line, short paragraphs, one clear idea, clear CTA, first person.
 Per-request instructions override the default style.
-Length: aim 800-1300 chars, HARD MAX 3000 chars including hashtags.
-Output VALID JSON only: hook, body, cta, hashtags (3-5, with #), verify_block (names/numbers/claims to double-check).
+Length: HARD MAX {max_chars} chars including hashtags.
+Output VALID JSON only: hook, body, cta, hashtags (3-5, with #),
+verify_block (names/numbers/claims to double-check).
 
 ANALYSIS: {analysis}
 INSTRUCTIONS: {instructions}
+"""
+
+MATERIAL_PROMPT = """Write a {platform} post from this material.
+Voice/style profile: {style}
+{samples}
+Rules: mirror the writer's voice, precise, no filler, no cliches, no emoji spam.
+Strong first line, short paragraphs, one clear idea, clear CTA, first person.
+Use only facts present in the material or instructions; invent nothing.
+Length: HARD MAX {max_chars} chars including hashtags.
+Output VALID JSON only: hook, body, cta, hashtags (3-5, with #),
+verify_block (names/numbers/claims to double-check).
+
+MATERIAL:
+{material}
+"""
+
+STYLE_PROMPT = """You are calibrating a social-media ghostwriter.
+
+Below are {count} past posts by the same person. Read them and infer a reusable
+voice guide. Return VALID JSON only with keys:
+- voice_guide: 4-8 sentences in imperative form covering tone, rhythm, sentence
+  length, vocabulary, openness, humour, formatting, hook style, CTA style, and
+  topics they naturally write about.
+- traits: array of 3-6 short labels.
+- avoid: array of 2-5 things this writer never does.
+Be specific and evidence-based; do not invent biography.
+
+POSTS:
+{samples}
 """
 
 DEFAULT_STYLE = (
@@ -189,22 +220,88 @@ DEFAULT_STYLE = (
 )
 
 
+def _sample_excerpts(samples: list[str], limit: int = 3) -> str:
+    if not samples:
+        return ""
+    excerpts = [s.strip()[:600] for s in samples[-limit:] if s.strip()]
+    if not excerpts:
+        return ""
+    joined = "\n---\n".join(excerpts)
+    return f"Representative past posts (match this voice):\n{joined}\n"
+
+
+def analyze_style(samples: list[str]) -> str:
+    """Turn past posts into a voice guide. Falls back to a safe default."""
+    if not samples:
+        return DEFAULT_STYLE
+    prompt = STYLE_PROMPT.format(
+        count=len(samples),
+        samples="\n---\n".join(s.strip() for s in samples if s.strip())[:24000],
+    )
+    try:
+        data, _ = generate_json(prompt)
+        guide = str(data.get("voice_guide", "")).strip()
+        if not guide:
+            raise ValueError("empty voice_guide")
+        traits = [str(t) for t in data.get("traits", []) if str(t).strip()]
+        avoid = [str(t) for t in data.get("avoid", []) if str(t).strip()]
+        parts = [guide]
+        if traits:
+            parts.append("Traits: " + ", ".join(traits[:6]) + ".")
+        if avoid:
+            parts.append("Avoid: " + "; ".join(avoid[:5]) + ".")
+        return " ".join(parts)
+    except Exception as e:  # noqa: BLE001
+        log_msg = f"style analysis failed, using fallback: {e}"
+        import logging
+
+        logging.getLogger("gemini").warning(log_msg)
+        return DEFAULT_STYLE
+
+
 def write_post(analysis: VideoAnalysis, instructions: str,
-               style: str = DEFAULT_STYLE) -> DraftPost:
+               style: str = DEFAULT_STYLE, platform: str = "LinkedIn",
+               max_chars: int = 3000,
+               samples: list[str] | None = None) -> DraftPost:
     data, _ = generate_json(
         WRITE_PROMPT.format(
-            style=style, analysis=analysis.model_dump_json(),
+            platform=platform, style=style, analysis=analysis.model_dump_json(),
             instructions=instructions or "(default style)",
+            max_chars=max_chars, samples=_sample_excerpts(samples or []),
         )
     )
     draft = DraftPost.model_validate(data)
-    if draft.char_count() > 3000:
+    if draft.char_count() > max_chars:
         # Ask for a tightened rewrite once.
         data2, _ = generate_json(
-            "Shorten this JSON post to under 3000 chars total, keep meaning: "
-            + json.dumps(data)
+            f"Shorten this JSON post to under {max_chars} chars total, "
+            "keep meaning: " + json.dumps(data)
         )
         draft = DraftPost.model_validate(data2)
-    if draft.char_count() > 3000:
-        raise ValueError("Draft exceeds LinkedIn 3000-char limit after rewrite")
+    if draft.char_count() > max_chars:
+        raise ValueError(
+            f"Draft exceeds {platform} {max_chars}-char limit after rewrite")
+    return draft
+
+
+def write_material_post(material: str, style: str = DEFAULT_STYLE,
+                        platform: str = "LinkedIn", max_chars: int = 3000,
+                        samples: list[str] | None = None) -> DraftPost:
+    """Draft from a text idea, caption, transcript or link (no video JSON)."""
+    data, _ = generate_json(
+        MATERIAL_PROMPT.format(
+            platform=platform, style=style, material=material[:12000],
+            max_chars=max_chars, samples=_sample_excerpts(samples or []),
+        )
+    )
+    draft = DraftPost.model_validate(data)
+    if draft.char_count() > max_chars:
+        data2, _ = generate_json(
+            f"Shorten this JSON post to under {max_chars} chars total, "
+            "keep meaning: " + json.dumps(data)
+        )
+        draft = DraftPost.model_validate(data2)
+    if draft.char_count() > max_chars:
+        raise ValueError(
+            f"Draft exceeds {platform} {max_chars}-char limit after rewrite")
     return draft
