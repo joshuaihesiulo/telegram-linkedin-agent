@@ -81,6 +81,18 @@ def account_keyboard(accounts) -> dict:
     ]}
 
 
+def invite_keyboard(web_url: str = "") -> dict:
+    """First-contact choices: open the web form, or set up in chat."""
+    if web_url:
+        return {"inline_keyboard": [
+            [{"text": "Open web setup", "url": web_url}],
+            [{"text": "Do it here instead", "callback_data": "ob:chat"}],
+        ]}
+    return {"inline_keyboard": [
+        [{"text": "Set up here", "callback_data": "ob:chat"}],
+    ]}
+
+
 def samples_keyboard(count: int, target: int) -> dict:
     if count < target:
         return {"inline_keyboard": [[

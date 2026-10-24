@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import logging
 
-from . import config, gemini, platforms, telegram
+from . import config, gemini, platforms, telegram, web_tokens
 from .store import store
 
 log = logging.getLogger("onboarding")
 
 SAMPLE_TARGET = max(1, config.ONBOARDING_SAMPLES)
+
+# Wizard position per step (used by /start progress notes and the web form).
+STEP_NUM = {"platform": 1, "connect": 2, "account": 2, "samples": 3,
+            "analyzing": 3, "mode": 4, "schedule": 5, "media": 6, "done": 6}
 
 
 def _state(user_id: int):
@@ -101,6 +105,42 @@ def resume(chat_id: int, user_id: int) -> None:
         start(chat_id, user_id, reset=False)
 
 
+def invite(chat_id: int, user_id: int) -> None:
+    """First contact (and /start): offer the web form and the chat flow.
+
+    Progress is never cleared here; /settings is the only reset. Without a
+    public base URL this falls back to the original chat-only behaviour.
+    """
+    s = _state(user_id)
+    if s.onboarded:
+        return
+    url = web_tokens.web_url(user_id)
+    if not url:
+        if s.state == "ONBOARDING" and s.onboarding_step:
+            resume(chat_id, user_id)
+        else:
+            start(chat_id, user_id, reset=False)
+        return
+    _save(user_id, invite_sent=True)
+    progress = ""
+    if s.onboarding_step and s.onboarding_step != "done":
+        count = len(s.samples)
+        progress = (
+            f"You are already part-way: step "
+            f"{STEP_NUM.get(s.onboarding_step, 1)} of 6, "
+            f"{count} post{'s' if count != 1 else ''} collected. Continue "
+            "wherever you like - nothing is lost.\n\n")
+    text = (
+        "Welcome! I am your social-media posting agent. Setup takes about "
+        "10 minutes: platform, account, your voice, posting rhythm, media."
+        f"\n\n{progress}"
+        "Easiest: the web form - paste many past posts at once and connect "
+        "your account in the browser.\n"
+        "Or set everything up right here in chat.")
+    telegram.send_message(chat_id, text,
+                          reply_markup=telegram.invite_keyboard(url))
+
+
 def handle_callback(chat_id: int, user_id: int, data: str,
                     background) -> bool:
     if not data.startswith("ob:"):
@@ -109,6 +149,13 @@ def handle_callback(chat_id: int, user_id: int, data: str,
     kind = parts[1] if len(parts) > 1 else ""
 
     if kind == "noop":
+        return True
+    if kind == "chat":
+        s = _state(user_id)
+        if s.state == "ONBOARDING" and s.onboarding_step not in ("", "done"):
+            resume(chat_id, user_id)
+        else:
+            start(chat_id, user_id, reset=False)
         return True
     if kind == "platform" and len(parts) == 3:
         _select_platform(chat_id, user_id, parts[2], background)
@@ -173,7 +220,9 @@ def handle_text(chat_id: int, user_id: int, text: str, background) -> bool:
         return True
 
     if step == "platform":
-        telegram.send_message(chat_id, "Pick a platform with the buttons above.")
+        telegram.send_message(
+            chat_id, "Where do you want to post?",
+            reply_markup=telegram.platform_keyboard(platforms.choices()))
         return True
     if step == "mode":
         telegram.send_message(chat_id, "Pick Scheduled or Only when I send material.")
@@ -200,14 +249,23 @@ def handle_media(chat_id: int, user_id: int) -> bool:
 
 # --- platform + connection -------------------------------------------------
 
-def _select_platform(chat_id: int, user_id: int, slug: str, background) -> None:
+def set_platform(user_id: int, slug: str) -> bool:
+    """Validate + store the chosen platform and move to the connect step."""
     p = platforms.get(slug)
     if not p:
+        return False
+    _save(user_id, platform=p.slug, account="", account_label="",
+          connect_url="", onboarding_step="connect")
+    return True
+
+
+def _select_platform(chat_id: int, user_id: int, slug: str, background) -> None:
+    if not set_platform(user_id, slug):
         telegram.send_message(chat_id, "Unknown platform. Pick one below.",
                               reply_markup=telegram.platform_keyboard(
                                   platforms.choices()))
         return
-    _save(user_id, platform=p.slug, onboarding_step="connect", connect_url="")
+    p = platforms.get(slug)
     telegram.send_message(chat_id, f"Connecting {p.name}...")
     background.add_task(_begin_connect, chat_id, user_id)
 
@@ -278,21 +336,40 @@ def _after_connect(chat_id: int, user_id: int) -> None:
                       platforms.detect_accounts(user_id, p.slug))
 
 
+def resolve_accounts(user_id: int, p=None, accounts=None):
+    """Decide the account step after connecting.
+
+    Returns (decision, accounts); decision is "auto" (a single account was
+    saved), "pick" (several found), "manual" (none found, ID needed), or
+    "skip" (this platform needs no account).
+    """
+    p = p or platforms.get(_state(user_id).platform)
+    if not p:
+        return "skip", []
+    if accounts is None:
+        accounts = platforms.detect_accounts(user_id, p.slug)
+    if len(accounts) == 1:
+        _save(user_id, account=accounts[0].value,
+              account_label=accounts[0].label)
+        return "auto", accounts
+    if len(accounts) > 1:
+        return "pick", accounts
+    if not p.needs_account:
+        return "skip", accounts
+    return "manual", accounts
+
+
 def _present_accounts(chat_id: int, user_id: int, p=None, accounts=None) -> None:
     """Confirm a detected account, ask which one, or ask for the ID."""
     p = p or platforms.get(_state(user_id).platform)
     if not p:
         return
-    if accounts is None:
-        accounts = platforms.detect_accounts(user_id, p.slug)
-
-    if len(accounts) == 1:
-        a = accounts[0]
-        _save(user_id, account=a.value, account_label=a.label)
-        telegram.send_message(chat_id, f"Posting as: {a.label}")
+    decision, accounts = resolve_accounts(user_id, p, accounts)
+    if decision == "auto":
+        telegram.send_message(chat_id, f"Posting as: {accounts[0].label}")
         _ask_samples(chat_id, user_id)
         return
-    if len(accounts) > 1:
+    if decision == "pick":
         _save(user_id, onboarding_step="account")
         telegram.send_message(
             chat_id,
@@ -301,7 +378,7 @@ def _present_accounts(chat_id: int, user_id: int, p=None, accounts=None) -> None
             reply_markup=telegram.account_keyboard(accounts),
         )
         return
-    if not p.needs_account:
+    if decision == "skip":
         _ask_samples(chat_id, user_id)
         return
     _save(user_id, onboarding_step="account")
@@ -312,31 +389,47 @@ def _present_accounts(chat_id: int, user_id: int, p=None, accounts=None) -> None
     )
 
 
-def _accept_account(chat_id: int, user_id: int, value: str,
-                    background) -> None:
-    s = _state(user_id)
-    p = platforms.get(s.platform)
-    if not p:
-        return
-    value = value.strip()
-    valid = True
-    hint = p.account_hint or "account ID"
-    if p.slug == "linkedin":
-        valid = value.startswith(("urn:li:person:", "urn:li:organization:"))
+def validate_account(slug: str, value: str) -> tuple[bool, str]:
+    """Check an account id/URN against the platform's format. (ok, hint)."""
+    value = (value or "").strip()
+    if not value:
+        return False, "an account ID"
+    if slug == "linkedin":
+        ok = value.startswith(("urn:li:person:", "urn:li:organization:"))
         hint = "a person URN (urn:li:person:...) or company URN " \
                "(urn:li:organization:...)"
-    elif p.slug == "facebook":
-        valid = value.isdigit()
+    elif slug == "facebook":
+        ok = value.isdigit()
         hint = "a numeric Facebook Page ID"
-    elif p.slug == "instagram":
-        valid = value.isdigit() or value == "me"
+    elif slug == "instagram":
+        ok = value.isdigit() or value == "me"
         hint = "a numeric Instagram Business account ID (or 'me')"
+    else:
+        ok = True
+        hint = "an account ID"
+    return ok, hint
 
-    if not valid:
-        telegram.send_message(chat_id, f"That does not look like {hint}. Try again.")
+
+def save_account(user_id: int, value: str) -> tuple[bool, str]:
+    """Validate + store a manually entered account. Returns (ok, hint)."""
+    s = _state(user_id)
+    if not platforms.get(s.platform):
+        return False, ""
+    ok, hint = validate_account(s.platform, value)
+    if ok:
+        _save(user_id, account=value.strip(), account_label=value.strip())
+    return ok, hint
+
+
+def _accept_account(chat_id: int, user_id: int, value: str,
+                    background) -> None:
+    ok, hint = save_account(user_id, value)
+    if not ok:
+        msg = (f"That does not look like {hint}. Try again." if hint
+               else "Pick a platform first with /start.")
+        telegram.send_message(chat_id, msg)
         return
-    _save(user_id, account=value, account_label=value)
-    telegram.send_message(chat_id, f"Posting as: {value}")
+    telegram.send_message(chat_id, f"Posting as: {value.strip()}")
     _ask_samples(chat_id, user_id)
 
 
@@ -374,6 +467,19 @@ def _add_sample(chat_id: int, user_id: int, text: str) -> None:
     telegram.send_message(
         chat_id, msg,
         reply_markup=telegram.samples_keyboard(n, SAMPLE_TARGET))
+
+
+def set_samples(user_id: int, texts) -> int:
+    """Replace the sample set (the web form submits every box at once)."""
+    clean: list[str] = []
+    for t in texts:
+        t = (t or "").strip()
+        if t:
+            clean.append(t[:6000])
+        if len(clean) >= 30:
+            break
+    _save(user_id, samples=clean)
+    return len(clean)
 
 
 def _samples_done(chat_id: int, user_id: int, background) -> None:
@@ -416,17 +522,26 @@ def _ask_mode(chat_id: int, user_id: int) -> None:
 
 # --- mode + schedule -------------------------------------------------------
 
-def _select_mode(chat_id: int, user_id: int, mode: str, background) -> None:
+def set_mode(user_id: int, mode: str) -> bool:
+    """Store the posting mode and move to the schedule or media step."""
     if mode not in ("on_demand", "scheduled"):
+        return False
+    if mode == "scheduled":
+        _save(user_id, posting_mode="scheduled", onboarding_step="schedule")
+    else:
+        _save(user_id, posting_mode="on_demand", schedule="",
+              onboarding_step="media")
+    return True
+
+
+def _select_mode(chat_id: int, user_id: int, mode: str, background) -> None:
+    if not set_mode(user_id, mode):
         telegram.send_message(chat_id, "Pick one of the two options.")
         return
     if mode == "scheduled":
-        _save(user_id, posting_mode="scheduled")
         _ask_schedule(chat_id, user_id)
-        return
-    _save(user_id, posting_mode="on_demand", schedule="",
-          onboarding_step="media")
-    _ask_media(chat_id, user_id)
+    else:
+        _ask_media(chat_id, user_id)
 
 
 def _ask_schedule(chat_id: int, user_id: int) -> None:
@@ -441,20 +556,26 @@ def _ask_schedule(chat_id: int, user_id: int) -> None:
     )
 
 
-def _handle_schedule(chat_id: int, user_id: int, text: str, background) -> None:
+def save_schedule(user_id: int, text: str):
+    """Parse + store a schedule string. Raises ValueError with advice."""
     from .scheduler import parse_schedule
 
+    sched = parse_schedule(
+        text, default_tz=_state(user_id).timezone or config.DEFAULT_TIMEZONE)
+    _save(user_id, schedule=sched.text, timezone=sched.timezone,
+          onboarding_step="media")
+    return sched
+
+
+def _handle_schedule(chat_id: int, user_id: int, text: str, background) -> None:
     try:
-        sched = parse_schedule(
-            text, default_tz=_state(user_id).timezone or config.DEFAULT_TIMEZONE)
+        sched = save_schedule(user_id, text)
     except ValueError as e:
         telegram.send_message(
             chat_id,
             f"{e}\n\nTry: daily 09:00 Africa/Lagos, weekdays 18:00 "
             "Europe/London, or mon,wed,fri 08:30 America/New_York.")
         return
-    _save(user_id, schedule=sched.text, timezone=sched.timezone,
-          onboarding_step="media")
     telegram.send_message(chat_id, f"Schedule saved: {sched.text} ({sched.timezone}).")
     _ask_media(chat_id, user_id)
 

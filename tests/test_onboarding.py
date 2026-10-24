@@ -1,4 +1,5 @@
 """Onboarding state machine: platform, connect, samples, mode, media."""
+import app.config as config
 import app.onboarding as onboarding
 import app.platforms as platforms
 from app.store import store
@@ -26,6 +27,8 @@ def _capture(monkeypatch):
         return {}
 
     monkeypatch.setattr(onboarding.telegram, "send_message", fake_send)
+    # These tests exercise the chat flow; the web offer is covered separately.
+    monkeypatch.setattr(config, "PUBLIC_BASE_URL", "")
     return sent
 
 

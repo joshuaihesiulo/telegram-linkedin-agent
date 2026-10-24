@@ -61,6 +61,7 @@ class UserState(BaseModel):
     # --- onboarding profile ---------------------------------------------
     onboarded: bool = False
     onboarding_step: str = ""
+    invite_sent: bool = False   # first-contact welcome with the web link sent
     platform: str = ""
     account: str = ""
     account_label: str = ""

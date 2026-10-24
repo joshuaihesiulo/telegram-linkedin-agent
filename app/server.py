@@ -10,12 +10,14 @@ from zoneinfo import ZoneInfo
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
 from . import config, drive, gemini, onboarding, platforms, publisher, scheduler, telegram
+from . import web_ui
 from .linkedin import publish_video_post
 from .pipeline import run_material_pipeline, run_pipeline, run_rewrite
 from .store import store
 
 log = logging.getLogger("server")
 app = FastAPI(title="Social Posting Agent")
+app.include_router(web_ui.router)
 
 MAX_TELEGRAM_UPLOAD = 20 * 1024 * 1024
 
@@ -84,10 +86,9 @@ def handle_message(chat_id: int, user_id: int, msg: dict,
     if text.startswith("/start"):
         if state.onboarded:
             telegram.send_message(chat_id, _dashboard(state))
-        elif state.state == "ONBOARDING":
-            onboarding.resume(chat_id, user_id)  # keep progress; /settings resets
         else:
-            onboarding.start(chat_id, user_id)
+            # First contact or resume: offer the web form and the chat flow.
+            onboarding.invite(chat_id, user_id)
         return
     if text.startswith("/settings"):
         telegram.send_message(chat_id, "Restarting setup. Your old profile is cleared.")
@@ -110,7 +111,11 @@ def handle_message(chat_id: int, user_id: int, msg: dict,
     # First-time users always enter onboarding.
     if not state.onboarded:
         if state.state != "ONBOARDING":
-            onboarding.start(chat_id, user_id)
+            if state.invite_sent:
+                # Second plain message: they want the in-chat setup.
+                onboarding.start(chat_id, user_id, reset=False)
+            else:
+                onboarding.invite(chat_id, user_id)
             return
         if "voice" in msg or "audio" in msg:
             text = _transcribe(chat_id, msg)
@@ -510,7 +515,7 @@ def _help_text() -> str:
     return (
         "Send material (text, photo, video, voice, or Drive link) and I draft "
         "it in your voice.\n\n"
-        "/start - dashboard\n"
+        "/start - dashboard (or your web setup link)\n"
         "/settings - redo platform, voice, mode, media\n"
         "/status - current profile and pending draft\n"
         "/new - discard the current draft\n"

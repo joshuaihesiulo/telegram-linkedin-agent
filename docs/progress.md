@@ -40,3 +40,26 @@
   store / scheduler / server coverage).
 - Next (needs live keys + Composio installed): end-to-end Connect Link, sample
   voice-analysis quality, and one real publish per platform.
+
+## 2026-10-25 — Web onboarding + invite flow
+- Fixed `/start` clearing onboarding progress mid-flow (now resumes; only
+  `/settings` resets). Committed separately as `6288088`.
+- `/start` (and first contact) offers both routes: a personal signed web link
+  (`app/web_tokens.py`, HMAC with the webhook secret, 30-day TTL) and
+  "Do it here instead" (`ob:chat`); a second plain message auto-starts the
+  chat flow (`invite_sent`). Without `PUBLIC_BASE_URL` it falls back to the
+  original chat-only behaviour.
+- New `app/web_ui.py`: six-step wizard (platform → Connect Link → account →
+  ≥10 posts → mode → schedule → media) on the FastAPI app, PRG redirects,
+  meta-refresh polling while Gemini learns the voice (background task +
+  in-process guard), done page hands back to Telegram, which receives the
+  "You are all set" message. Great for pasting many posts at once.
+- Onboarding internals split into channel-agnostic helpers (`set_platform`,
+  `save_account`, `resolve_accounts`, `set_samples`, `set_mode`,
+  `save_schedule`) so web and chat stay interchangeable mid-flow.
+- Tests: 57 passed (+7 web onboarding: token sign/tamper/expiry, invalid-link
+  400, full web flow with Telegram handoff, schedule validation renders,
+  first-contact invite linking, web-aware /start + resume, account picker +
+  analyzing page).
+- Next: live end-to-end run needs `GEMINI_API_KEY` + `COMPOSIO_API_KEY` in
+  `.env` and a public HTTPS URL (deploy or tunnel) for `scripts/set_webhook.py`.

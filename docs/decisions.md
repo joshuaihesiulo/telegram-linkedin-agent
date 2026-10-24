@@ -13,3 +13,5 @@
 - 2026-10-23: Scheduling = in-process daemon thread (SCHEDULER_ENABLED / SCHEDULER_INTERVAL_SEC), no external scheduler; Instagram publishes at the slot (no native scheduling). (design)
 - 2026-10-23: Large media staged with Composio `FileUploadable` (`{name,mimetype,s3key}`); base64 data URLs removed. (design)
 - 2026-10-23: LinkedIn org-page native video is unsupported by the toolkit → clear error suggesting the personal profile or an image. Instagram needs public media URLs (Telegram files are private). (constraint)
+- 2026-10-25: First-time onboarding is a web form linked from the bot (personal signed URL `/onboard?t=…` bound to `telegram_id`, HMAC via `TELEGRAM_WEBHOOK_SECRET`), with the chat flow kept as fallback. Both channels write the same `user_state`/`onboarding_step`, so setup can be mixed freely; drafts + approvals stay in Telegram. (user)
+- 2026-10-25: Web wizard needs no new dependencies — f-string HTML with `html.escape`, urlencoded POSTs via `request.form()`, 303-redirect-after-POST, `<meta refresh>` polling while Gemini builds the voice guide (FastAPI background task + in-process guard). (design)

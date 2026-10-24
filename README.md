@@ -82,13 +82,40 @@ See `docs/task_plan.md`, `docs/findings.md`, `docs/progress.md`, `docs/decisions
 ```powershell
 copy .env.example .env  # fill in keys (Telegram, Gemini, Composio, Supabase, Drive)
 python -m pytest tests/ -q
-python -m uvicorn app.server:app --port 8000
+python -m uvicorn app.server:app --port 8000 --env-file .env
 python scripts/set_webhook.py  # after deploy, sets PUBLIC_BASE_URL/webhook
 ```
 
+The app reads keys from the environment only (no dotenv import), so pass
+`--env-file .env`. For a local web-setup demo set
+`PUBLIC_BASE_URL=http://localhost:8000` in `.env`; in production it must be
+the public HTTPS URL of this server (webhook + personal setup links).
+
 ## First-time onboarding
 
-1. `/start` → pick the platform (LinkedIn, X, Facebook Page, Instagram).
+`/start` (or any first message) offers two ways to set up — a web form
+(easiest for pasting many posts) or the same flow entirely in chat. Both
+write the same saved progress, so you can switch mid-way without losing
+anything; `/settings` is the only reset.
+
+Web form: the bot sends a personal signed link
+(`PUBLIC_BASE_URL/onboard?t=…`, bound to your Telegram id — no login). The
+wizard walks through:
+
+1. Platform (LinkedIn, X, Facebook Page, Instagram).
+2. Connect Link (Composio hosted sign-in), then confirm the account it found
+   or type the id/URN.
+3. At least 10 past posts so Gemini can learn your voice; the page polls
+   while the voice guide is built.
+4. Scheduled posting (days, time, timezone) or on-demand.
+5. Media preference, with video instructions.
+
+The bot confirms in Telegram when the profile is live; drafting and approval
+stay in chat.
+
+In chat:
+
+1. `/start` → "Do it here instead" → pick the platform.
 2. Tap the Connect Link and grant access; the bot verifies the connection and
    reads back the account it found (person/page/IG account). You can also type
    an account id (e.g. the LinkedIn person or organization URN).
@@ -114,6 +141,9 @@ drafts a post for approval. Commands: `/start /settings /status /new /cancel /he
 
 - Media is staged with Composio's `FileUploadable` (streamed to S3 — no base64
   in memory), then published through the user's own Composio session.
+- Web onboarding (`app/web_ui.py`) writes the same `user_state`/`onboarding_step`
+  the chat flow uses; links are HMAC-signed with `TELEGRAM_WEBHOOK_SECRET`
+  (`app/web_tokens.py`). No extra dependencies — f-string HTML + urlencoded forms.
 - Scheduling is an in-process daemon thread (`SCHEDULER_ENABLED`,
   `SCHEDULER_INTERVAL_SEC`); `DEFAULT_TIMEZONE` seeds onboarding and
   `ONBOARDING_SAMPLES` sets the minimum sample count (default 10).
