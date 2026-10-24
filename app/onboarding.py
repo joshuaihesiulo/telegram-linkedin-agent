@@ -69,6 +69,38 @@ def start(chat_id: int, user_id: int, reset: bool = True) -> None:
     )
 
 
+def resume(chat_id: int, user_id: int) -> None:
+    """Re-prompt the current step without clearing progress (used by /start).
+
+    Onboarding continues automatically when the user sends their next message;
+    this just shows where they are. /settings is the explicit full restart.
+    """
+    s = _state(user_id)
+    if s.onboarded:
+        return
+    p = platforms.get(s.platform) if s.platform else None
+    step = s.onboarding_step or "platform"
+
+    if not p or step == "platform":
+        start(chat_id, user_id, reset=False)
+    elif step == "connect":
+        _begin_connect(chat_id, user_id)
+    elif step == "account":
+        _present_accounts(chat_id, user_id)
+    elif step == "samples":
+        _ask_samples(chat_id, user_id)
+    elif step == "analyzing":
+        telegram.send_message(chat_id, "Still learning your voice - one moment.")
+    elif step == "mode":
+        _ask_mode(chat_id, user_id)
+    elif step == "schedule":
+        _ask_schedule(chat_id, user_id)
+    elif step == "media":
+        _ask_media(chat_id, user_id)
+    else:
+        start(chat_id, user_id, reset=False)
+
+
 def handle_callback(chat_id: int, user_id: int, data: str,
                     background) -> bool:
     if not data.startswith("ob:"):
@@ -241,8 +273,18 @@ def _after_connect(chat_id: int, user_id: int) -> None:
     p = platforms.get(s.platform)
     if not p:
         return
-    accounts = platforms.detect_accounts(user_id, p.slug)
     telegram.send_message(chat_id, f"{p.name} connected.")
+    _present_accounts(chat_id, user_id, p,
+                      platforms.detect_accounts(user_id, p.slug))
+
+
+def _present_accounts(chat_id: int, user_id: int, p=None, accounts=None) -> None:
+    """Confirm a detected account, ask which one, or ask for the ID."""
+    p = p or platforms.get(_state(user_id).platform)
+    if not p:
+        return
+    if accounts is None:
+        accounts = platforms.detect_accounts(user_id, p.slug)
 
     if len(accounts) == 1:
         a = accounts[0]
@@ -355,10 +397,15 @@ def _finish_samples(chat_id: int, user_id: int) -> None:
         log.exception("style analysis failed")
         guide = gemini.DEFAULT_STYLE
         telegram.send_message(chat_id, f"Voice analysis failed ({e}); using defaults.")
-    _save(user_id, voice_guide=guide, onboarding_step="mode")
+    _save(user_id, voice_guide=guide)
+    telegram.send_message(chat_id, "Voice learned.")
+    _ask_mode(chat_id, user_id)
+
+
+def _ask_mode(chat_id: int, user_id: int) -> None:
+    _save(user_id, onboarding_step="mode")
     telegram.send_message(
         chat_id,
-        "Voice learned.\n\n"
         "Step 4 of 6 - How should posts happen?\n\n"
         "Scheduled: I publish drafts at your chosen times.\n"
         "Only when you send material: I draft when you give me something to "
@@ -374,19 +421,24 @@ def _select_mode(chat_id: int, user_id: int, mode: str, background) -> None:
         telegram.send_message(chat_id, "Pick one of the two options.")
         return
     if mode == "scheduled":
-        _save(user_id, posting_mode="scheduled", onboarding_step="schedule")
-        telegram.send_message(
-            chat_id,
-            "Step 5 of 6 - Posting schedule.\n\n"
-            "Send a schedule with a timezone, for example:\n"
-            "- daily 09:00 Africa/Lagos\n"
-            "- weekdays 18:00 Europe/London\n"
-            "- mon,wed,fri 08:30 America/New_York",
-        )
+        _save(user_id, posting_mode="scheduled")
+        _ask_schedule(chat_id, user_id)
         return
     _save(user_id, posting_mode="on_demand", schedule="",
           onboarding_step="media")
     _ask_media(chat_id, user_id)
+
+
+def _ask_schedule(chat_id: int, user_id: int) -> None:
+    _save(user_id, onboarding_step="schedule")
+    telegram.send_message(
+        chat_id,
+        "Step 5 of 6 - Posting schedule.\n\n"
+        "Send a schedule with a timezone, for example:\n"
+        "- daily 09:00 Africa/Lagos\n"
+        "- weekdays 18:00 Europe/London\n"
+        "- mon,wed,fri 08:30 America/New_York",
+    )
 
 
 def _handle_schedule(chat_id: int, user_id: int, text: str, background) -> None:

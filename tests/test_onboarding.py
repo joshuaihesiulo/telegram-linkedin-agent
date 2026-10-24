@@ -159,3 +159,34 @@ def test_connect_keyboard_without_url_has_no_url_button():
     buttons = [b for row in kb["inline_keyboard"] for b in row]
     assert all("url" not in b for b in buttons)
     assert any(b["callback_data"] == "ob:connected" for b in buttons)
+
+
+def test_start_mid_onboarding_resumes_without_clearing(monkeypatch):
+    sent = _capture(monkeypatch)
+    import app.server as server
+
+    uid = 7005
+    onboarding._save(uid, state="ONBOARDING", onboarding_step="samples",
+                     onboarded=False, platform="linkedin",
+                     account="urn:li:person:7", samples=["a", "b", "c"])
+    server.handle_message(uid, uid, {"text": "/start"}, Background())
+
+    s = store.get_state(uid)
+    assert s.samples == ["a", "b", "c"]      # progress kept
+    assert s.onboarding_step == "samples"
+    assert "3/10" in sent[-1]["text"]        # re-prompted the current step
+
+
+def test_settings_mid_onboarding_resets(monkeypatch):
+    sent = _capture(monkeypatch)
+    import app.server as server
+
+    uid = 7006
+    onboarding._save(uid, state="ONBOARDING", onboarding_step="samples",
+                     onboarded=False, platform="linkedin", samples=["a"])
+    server.handle_message(uid, uid, {"text": "/settings"}, Background())
+
+    s = store.get_state(uid)
+    assert s.samples == []
+    assert s.onboarding_step == "platform"
+    assert "six steps" in sent[-1]["text"]

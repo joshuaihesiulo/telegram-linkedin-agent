@@ -84,6 +84,8 @@ def handle_message(chat_id: int, user_id: int, msg: dict,
     if text.startswith("/start"):
         if state.onboarded:
             telegram.send_message(chat_id, _dashboard(state))
+        elif state.state == "ONBOARDING":
+            onboarding.resume(chat_id, user_id)  # keep progress; /settings resets
         else:
             onboarding.start(chat_id, user_id)
         return
