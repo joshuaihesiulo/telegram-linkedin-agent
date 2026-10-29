@@ -14,6 +14,24 @@ def _base() -> str:
     return f"{config.TELEGRAM_API}/bot{config.TELEGRAM_BOT_TOKEN}"
 
 
+_username_cache: str | None = None
+
+
+def bot_username() -> str:
+    """Bot username for t.me links: configured value, else getMe (cached)."""
+    global _username_cache
+    if config.TELEGRAM_BOT_USERNAME:
+        return config.TELEGRAM_BOT_USERNAME.lstrip("@")
+    if _username_cache is None:
+        try:
+            r = httpx.get(f"{_base()}/getMe", timeout=10)
+            r.raise_for_status()
+            _username_cache = str(r.json()["result"].get("username") or "")
+        except Exception:  # noqa: BLE001
+            _username_cache = ""
+    return _username_cache
+
+
 def send_message(chat_id: int, text: str,
                  reply_markup: dict | None = None) -> dict:
     r = httpx.post(

@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request
 
-from . import config, drive, gemini, onboarding, platforms, publisher, scheduler, telegram
+from . import config, drive, gemini, onboarding, pairing, platforms, publisher, scheduler, telegram, web_tokens
 from . import web_ui
 from .linkedin import publish_video_post
 from .pipeline import run_material_pipeline, run_pipeline, run_rewrite
@@ -84,6 +84,10 @@ def handle_message(chat_id: int, user_id: int, msg: dict,
 
     # Commands that work before and after onboarding.
     if text.startswith("/start"):
+        payload = text[len("/start"):].strip()
+        if payload:
+            _claim_site_session(chat_id, user_id, payload)
+            return
         if state.onboarded:
             telegram.send_message(chat_id, _dashboard(state))
         else:
@@ -167,6 +171,35 @@ def handle_message(chat_id: int, user_id: int, msg: dict,
 
     if text:
         _accept_text(chat_id, user_id, text, background)
+
+
+def _claim_site_session(chat_id: int, user_id: int, payload: str) -> None:
+    """`/start <id>` from the public website's t.me deep link."""
+    session = pairing.claim(payload, user_id)
+    if not session:
+        site = config.PUBLIC_BASE_URL.rstrip("/")
+        hint = f" Start again at {site}." if site else ""
+        telegram.send_message(
+            chat_id, "That setup link is invalid or has expired." + hint)
+        return
+    state = store.get_state(user_id)
+    if state.onboarded:
+        telegram.send_message(chat_id, _dashboard(state))
+        return
+    if not state.platform:
+        onboarding.set_platform(user_id, session["platform"])
+    url = web_tokens.web_url(user_id)
+    if not url:
+        onboarding.resume(chat_id, user_id)
+        return
+    telegram.send_message(
+        chat_id,
+        "Telegram linked.\n\nYour setup continues in the browser - the page "
+        "updates by itself. Or finish it right here in chat.",
+        reply_markup={"inline_keyboard": [
+            [{"text": "Continue setup", "url": url}],
+            [{"text": "Do it here instead", "callback_data": "ob:chat"}],
+        ]})
 
 
 def _transcribe(chat_id: int, msg: dict) -> str | None:

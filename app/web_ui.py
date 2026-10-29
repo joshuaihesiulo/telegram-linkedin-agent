@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from . import config, onboarding, platforms, web_tokens
+from . import config, onboarding, pairing, platforms, telegram, web_tokens
 from .store import store
 
 log = logging.getLogger("web")
@@ -199,19 +199,24 @@ def _finish_analysis(uid: int) -> None:
 
 # --- sections ----------------------------------------------------------------
 
-def _platform_section(s, t: str, error: str = "") -> str:
+def _platform_options(selected: str = "") -> str:
     opts = []
     for p in platforms.choices():
-        checked = " checked" if s.platform == p.slug else ""
+        checked = " checked" if selected == p.slug else ""
         note = (f"<div class='muted'>{html.escape(p.note)}</div>"
                 if p.note else "")
         opts.append(
             f"<label class='opt'><input type='radio' name='platform' "
             f"value='{p.slug}'{checked}>"
             f"<div><strong>{html.escape(p.name)}</strong>{note}</div></label>")
+    return "".join(opts)
+
+
+def _platform_section(s, t: str, error: str = "") -> str:
     return ("<h2>Step 1 of 6 - Where do you want to post?</h2>"
             + _err(error)
-            + _form(t, "/onboard/platform", "".join(opts), "Continue"))
+            + _form(t, "/onboard/platform", _platform_options(s.platform),
+                    "Continue"))
 
 
 def _connect_section(s, t: str, url: str, error: str = "",
@@ -391,7 +396,114 @@ def _done_section(s) -> str:
         "approve. Commands: /status /settings /new</p>")
 
 
+# --- public site: home + Telegram link ---------------------------------------
+
+def _home_body(error: str = "", selected: str = "") -> str:
+    bot = telegram.bot_username()
+    bot_line = (f"<p class='muted'>Already set up? "
+                f"<a href='https://t.me/{html.escape(bot)}'>Open the bot</a>."
+                "</p>") if bot else ""
+    missing = ("" if bot else
+               _err("TELEGRAM_BOT_USERNAME is not configured, so Telegram "
+                    "linking is unavailable."))
+    return (
+        "<h2>Set up your social posting agent</h2>"
+        "<p>One form, about ten minutes: I learn your voice from posts you "
+        "have already written, then draft new ones for your approval.</p>"
+        "<ul class='sum'>"
+        "<li>Pick where you post - LinkedIn, X, a Facebook Page, or "
+        "Instagram.</li>"
+        "<li>Link Telegram with one tap - drafts and approvals happen "
+        "there.</li>"
+        "<li>Connect the account and paste at least 10 past posts.</li>"
+        "<li>Send an idea and approve the draft when it sounds like you.</li>"
+        "</ul>"
+        f"{missing}{_err(error)}"
+        "<form method='post' action='/begin'>"
+        f"{_platform_options(selected)}"
+        "<button type='submit'>Continue with Telegram</button></form>"
+        f"{bot_line}")
+
+
+def _apply_platform(uid: int, slug: str) -> None:
+    """Apply the platform chosen on the public site, unless the user has
+    already picked one (their existing progress always wins)."""
+    s = store.get_state(uid)
+    if s.onboarded or s.platform:
+        return
+    if platforms.get(slug):
+        onboarding.set_platform(uid, slug)
+
+
+def _link_waiting(sid: str, session: dict) -> HTMLResponse:
+    bot = telegram.bot_username()
+    p = platforms.get(session.get("platform", ""))
+    name = p.name if p else session.get("platform", "")
+    if not bot:
+        return _shell(
+            "Link Telegram", "",
+            "<h2>Telegram is not configured</h2>"
+            "<p>Set TELEGRAM_BOT_USERNAME (the bot username without @) and "
+            "reload this page.</p>", status=500)
+    url = f"https://t.me/{bot}?start={sid}"
+    body = (
+        "<h2>Link Telegram to continue</h2>"
+        f"<p>Chosen platform: <b>{html.escape(name)}</b>.</p>"
+        "<p>Open the link and press <b>Start</b> in Telegram. This page "
+        "updates by itself once your chat is linked.</p>"
+        f"<a class='btn' href='{html.escape(url)}' target='_blank' "
+        "rel='noopener'>Open Telegram</a>"
+        "<p class='muted'>Nothing happened? The link stays valid for 30 "
+        f"minutes; <a href='{html.escape(url)}'>open it again</a> or "
+        "<a href='/'>start over</a>.</p>"
+        f"<p class='mono muted'>{html.escape(url)}</p>")
+    return _shell("Link Telegram", _progress(1), body, refresh=3)
+
+
+def _link_expired() -> HTMLResponse:
+    return _shell(
+        "Link expired", "",
+        "<h2>This setup link is invalid or has expired</h2>"
+        "<p>Links last 30 minutes. Start again from the home page.</p>"
+        "<a class='btn' href='/'>Start over</a>", status=400)
+
+
 # --- routes ------------------------------------------------------------------
+
+@router.get("/", response_class=HTMLResponse)
+def site_home():
+    return _shell("Set up your agent", "", _home_body())
+
+
+@router.post("/begin")
+async def begin(request: Request):
+    form = await request.form()
+    slug = str(form.get("platform") or "")
+    if not platforms.get(slug):
+        return _shell("Set up your agent", "",
+                      _home_body(error="Pick one of the platforms."),
+                      status=400)
+    sid = pairing.create(slug)
+    return RedirectResponse(f"/link?s={sid}", status_code=303)
+
+
+@router.get("/link")
+def link_page(s: str = ""):
+    return RedirectResponse(f"/link/status?s={s}", status_code=303)
+
+
+@router.get("/link/status", response_class=HTMLResponse)
+def link_status(s: str = ""):
+    session = pairing.get(s)
+    if not session:
+        return _link_expired()
+    tg_id = session.get("telegram_id")
+    if tg_id:
+        _apply_platform(int(tg_id), session["platform"])
+        token = web_tokens.make_token(int(tg_id))
+        return RedirectResponse(f"/onboard?t={token}", status_code=303)
+    return _link_waiting(s, session)
+
 
 @router.get("/onboard", response_class=HTMLResponse)
 def onboard_page(background: BackgroundTasks, t: str = ""):

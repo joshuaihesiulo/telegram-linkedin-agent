@@ -90,9 +90,29 @@ copy .env.example .env  # fill in keys (Telegram, Gemini, Composio, Supabase, Dr
 ```
 
 The app reads keys from the environment only (no dotenv import), so pass
-`--env-file .env`. For a local web-setup demo set
+`--env-file .env`. `TELEGRAM_BOT_USERNAME` (the bot username without @) is
+used by the public site for its `t.me` deep link; if it is unset the server
+asks Telegram once and caches the answer.
+
+For a local web-setup demo set
 `PUBLIC_BASE_URL=http://localhost:8000` in `.env`; in production it must be
-the public HTTPS URL of this server (webhook + personal setup links).
+the public HTTPS URL of this server (webhook + public site + personal setup links).
+
+## Public website
+
+The public site (`/`) is the entry point for anyone who does not have the
+bot yet:
+
+1. Visitor picks a platform and taps **Continue with Telegram**.
+2. The site opens `t.me/<bot>?start=<session>` — one tap in Telegram.
+3. The bot links the chat and replies with a link to the personal wizard
+   (`PUBLIC_BASE_URL/onboard?t=...`) plus a "Do it here instead" button.
+4. The browser wizard picks up exactly where Telegram left off; both sides
+   write the same progress, so setup can be mixed freely.
+5. When the profile is live, drafting and approvals stay in Telegram.
+
+For a live test without deploying, run the server and the Cloudflare tunnel
+as shown above, then open `PUBLIC_BASE_URL/` in a browser.
 
 For a live Telegram test without deploying, use a Cloudflare quick tunnel and
 point both the server and the webhook at it:
