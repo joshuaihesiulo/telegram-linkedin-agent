@@ -16,8 +16,11 @@ Composio project:
 
 ```powershell
 cd C:\Users\joshu\OneDrive\Documents\Projects\telegram-linkedin-agent
-py -3.12 -m venv venv   # already created; skip if venv exists
-venv\Scripts\python.exe -m pip install -r requirements.txt
+# Create the venv OUTSIDE OneDrive: a synced site-packages folder makes every
+# import crawl (minutes instead of seconds).
+py -3.12 -m venv $env:USERPROFILE\venvs\tla
+$PY = "$env:USERPROFILE\venvs\tla\Scripts\python.exe"
+& $PY -m pip install -r requirements.txt
 copy .env.example .env  # then fill in the keys
 ```
 
@@ -32,7 +35,7 @@ Keys:
 ## Run the agent
 
 ```powershell
-venv\Scripts\python.exe main.py
+& $PY main.py
 ```
 
 Requires a Telegram **bot token** - message @BotFather on Telegram,
@@ -48,7 +51,7 @@ limit is roughly 1 message/second per chat.
 Option A - per-session endpoint scoped to Telegram only:
 
 ```powershell
-venv\Scripts\python.exe show_mcp.py
+& $PY show_mcp.py
 ```
 
 Point your MCP client at the printed URL + headers.
@@ -81,15 +84,29 @@ See `docs/task_plan.md`, `docs/findings.md`, `docs/progress.md`, `docs/decisions
 
 ```powershell
 copy .env.example .env  # fill in keys (Telegram, Gemini, Composio, Supabase, Drive)
-python -m pytest tests/ -q
-python -m uvicorn app.server:app --port 8000 --env-file .env
-python scripts/set_webhook.py  # after deploy, sets PUBLIC_BASE_URL/webhook
+& $PY -m pytest tests/ -q
+& $PY -m uvicorn app.server:app --port 8000 --env-file .env
+& $PY scripts/set_webhook.py  # after deploy, sets PUBLIC_BASE_URL/webhook
 ```
 
 The app reads keys from the environment only (no dotenv import), so pass
 `--env-file .env`. For a local web-setup demo set
 `PUBLIC_BASE_URL=http://localhost:8000` in `.env`; in production it must be
 the public HTTPS URL of this server (webhook + personal setup links).
+
+For a live Telegram test without deploying, use a Cloudflare quick tunnel and
+point both the server and the webhook at it:
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:8000   # prints https://<random>.trycloudflare.com
+$env:PUBLIC_BASE_URL = "https://<random>.trycloudflare.com"
+& $PY -m uvicorn app.server:app --port 8000 --env-file .env
+& $PY scripts/set_webhook.py
+```
+
+The quick-tunnel hostname changes on every run, so re-run `set_webhook.py`
+each time (and set `PUBLIC_BASE_URL` before starting the server — invite links
+are built from it).
 
 ## First-time onboarding
 
